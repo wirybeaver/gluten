@@ -24,11 +24,14 @@ import org.apache.spark.sql.connector.write.{RequiresDistributionAndOrdering, Wr
 import org.apache.spark.sql.execution.datasources.v2.DistributionAndOrderingUtils
 
 import org.apache.iceberg._
+import org.apache.iceberg.avro.AvroSchemaUtil
 import org.apache.iceberg.spark.{SparkFunctionCatalog, SparkWriteConf}
 import org.apache.iceberg.spark.source.SparkWrite.TaskCommit
 import org.apache.iceberg.types.Type
 import org.apache.iceberg.types.Type.TypeID
 import org.apache.iceberg.types.Types.{ListType, MapType}
+
+import java.util.Locale
 
 object IcebergWriteUtil {
 
@@ -70,8 +73,19 @@ object IcebergWriteUtil {
     write.isInstanceOf[SparkWrite]
   }
 
-  def hasUnsupportedDataType(write: Write): Boolean = {
-    getWriteSchema(write).columns().stream().anyMatch(d => hasUnsupportedDataType(d.`type`()))
+  def validateDataWrite(
+      schema: Schema,
+      codec: String,
+      outputNames: Seq[String]): Option[String] = {
+    if (schema.columns().stream().anyMatch(d => hasUnsupportedDataType(d.`type`()))) {
+      Some("Contains UUID or FIXED data type")
+    } else if (Set("brotli", "lzo", "lz4raw", "lz4_raw").contains(codec.toLowerCase(Locale.ROOT))) {
+      Some("Codec unsupported: " + codec)
+    } else if (outputNames.exists(name => AvroSchemaUtil.makeCompatibleName(name) != name)) {
+      Some("Not support the compatible column name")
+    } else {
+      None
+    }
   }
 
   private def hasUnsupportedDataType(dataType: Type): Boolean = {
