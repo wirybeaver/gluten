@@ -93,6 +93,15 @@ case class OffloadIcebergWriteToDataSourceV2() extends OffloadSingleNode {
   }
 }
 
+case class OffloadIcebergWriteDelta() extends OffloadSingleNode {
+  override def offload(plan: SparkPlan): SparkPlan = {
+    if (!GlutenIcebergConfig.get.enableNativeWrite) {
+      return plan
+    }
+    IcebergWriteDeltaOffload.offload(plan)
+  }
+}
+
 object OffloadIcebergWrite {
   def inject(injector: Injector): Unit = {
     // Inject legacy rule.
@@ -103,6 +112,7 @@ object OffloadIcebergWrite {
           OffloadIcebergReplaceData(),
           OffloadIcebergOverwrite(),
           OffloadIcebergOverwritePartitionsDynamic(),
+          OffloadIcebergWriteDelta(),
           OffloadIcebergWriteToDataSourceV2()
         )
         HeuristicTransform.Simple(
