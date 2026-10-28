@@ -64,6 +64,35 @@ case class IcebergDataWriteFactory(
       partitionId: Int,
       taskId: Long,
       epochId: Long): DataWriter[ColumnarBatch] = {
+    val (writerHandle, jniWrapper) = IcebergDataWriteFactory.createNativeWriter(
+      schema,
+      format,
+      directory,
+      codec,
+      partitionId,
+      taskId,
+      queryId + "-" + epochId,
+      partitionSpec,
+      field,
+      icebergProperties)
+    IcebergColumnarBatchDataWriter(writerHandle, jniWrapper, format, partitionSpec, sortOrder)
+  }
+
+}
+
+object IcebergDataWriteFactory {
+  private[write] def createNativeWriter(
+      schema: StructType,
+      format: Int,
+      directory: String,
+      codec: String,
+      partitionId: Int,
+      taskId: Long,
+      operationId: String,
+      partitionSpec: PartitionSpec,
+      field: IcebergNestedField,
+      icebergProperties: util.HashMap[String, String],
+      nativeWriteInfo: Array[Byte] = Array.emptyByteArray): (Long, IcebergWriteJniWrapper) = {
     val fields = partitionSpec
       .fields()
       .stream()
@@ -74,46 +103,17 @@ case class IcebergDataWriteFactory(
       .setSpecId(partitionSpec.specId())
       .addAllFields(fields)
       .build()
-    val operationId = queryId + "-" + epochId
-    val (writerHandle, jniWrapper) =
-      getJniWrapper(
-        schema,
-        format,
-        directory,
-        codec,
-        partitionId,
-        taskId,
-        operationId,
-        specProto,
-        field,
+    val arrowSchema = SparkArrowUtil.toArrowSchema(schema, SQLConf.get.sessionLocalTimeZone)
+    val allocator = ArrowBufferAllocators.contextInstance()
+    val cSchema = ArrowSchema.allocateNew(allocator)
+    try {
+      ArrowAbiUtil.exportSchema(allocator, arrowSchema, cSchema)
+      val runtime = Runtimes.contextInstance(
+        BackendsApiManager.getBackendName,
+        "IcebergWrite#write",
         icebergProperties)
-    IcebergColumnarBatchDataWriter(writerHandle, jniWrapper, format, partitionSpec, sortOrder)
-  }
-
-  private def getJniWrapper(
-      localSchema: StructType,
-      format: Int,
-      directory: String,
-      codec: String,
-      partitionId: Int,
-      taskId: Long,
-      operationId: String,
-      partitionSpec: IcebergPartitionSpec,
-      field: IcebergNestedField,
-      icebergProperties: util.HashMap[String, String]): (Long, IcebergWriteJniWrapper) = {
-    val schema = SparkArrowUtil.toArrowSchema(localSchema, SQLConf.get.sessionLocalTimeZone)
-    val arrowAlloc = ArrowBufferAllocators.contextInstance()
-    val cSchema = ArrowSchema.allocateNew(arrowAlloc)
-    ArrowAbiUtil.exportSchema(arrowAlloc, schema, cSchema)
-
-    val runtime = Runtimes.contextInstance(
-      BackendsApiManager.getBackendName,
-      "IcebergWrite#write",
-      icebergProperties)
-    val jniWrapper = new IcebergWriteJniWrapper(runtime)
-
-    val writer =
-      jniWrapper.init(
+      val jniWrapper = new IcebergWriteJniWrapper(runtime)
+      val writer = jniWrapper.init(
         cSchema.memoryAddress(),
         format,
         directory,
@@ -121,9 +121,12 @@ case class IcebergDataWriteFactory(
         partitionId,
         taskId,
         operationId,
-        partitionSpec.toByteArray,
-        field.toByteArray)
-    cSchema.close()
-    (writer, jniWrapper)
+        specProto.toByteArray,
+        field.toByteArray,
+        nativeWriteInfo)
+      (writer, jniWrapper)
+    } finally {
+      cSchema.close()
+    }
   }
 }
