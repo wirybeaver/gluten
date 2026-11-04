@@ -38,9 +38,10 @@ class VeloxIcebergDeletionVectorSuite extends IcebergSuite {
 
       val sparkDvRead = spark.sql("SELECT * FROM iceberg_dv_delete ORDER BY id")
       checkAnswer(sparkDvRead, Seq(Row(2, "b"), Row(3, "c"), Row(4, "d")))
-      assert(getExecutedPlan(sparkDvRead).collect {
-        case _: IcebergScanTransformer => true
-      }.nonEmpty)
+      val scan = getExecutedPlan(sparkDvRead).collectFirst {
+        case icebergScan: IcebergScanTransformer => icebergScan
+      }.get
+      assert(scan.metrics("numDeletes").value == 1)
 
       val nativeDelete = spark.sql("DELETE FROM iceberg_dv_delete WHERE id = 2")
       assertNativeDeltaWrite(nativeDelete)
