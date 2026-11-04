@@ -22,7 +22,6 @@ import org.apache.spark.sql.catalyst.expressions.SortOrder
 
 import org.apache.iceberg.{FileFormat, PartitionField, PartitionSpec, Schema, TableProperties}
 import org.apache.iceberg.TableProperties._
-import org.apache.iceberg.avro.AvroSchemaUtil
 import org.apache.iceberg.spark.source.IcebergWriteUtil
 import org.apache.iceberg.types.Type.TypeID
 
@@ -58,46 +57,14 @@ trait IcebergWriteExec extends ColumnarV2TableWriteExec {
     } else codec.toLowerCase(Locale.ROOT)
   }
 
-  protected def getParquetCompressionLevel: Option[String] = {
-    Option(IcebergWriteUtil.getWriteProperty(write).get(PARQUET_COMPRESSION_LEVEL))
-      .orElse(Option(IcebergWriteUtil.getTable(write).properties().get(PARQUET_COMPRESSION_LEVEL)))
-  }
-
-  protected def getParquetPageVersion: String = {
-    IcebergWriteUtil
-      .getTable(write)
-      .properties()
-      .getOrDefault("write.parquet.page-version", "v1")
-      .toUpperCase(Locale.ROOT)
-  }
-
   protected def getParquetPageSizeBytes: String = {
     val tableProps = IcebergWriteUtil.getTable(write).properties()
     normalizeCapacityString(
       tableProps.getOrDefault(PARQUET_PAGE_SIZE_BYTES, PARQUET_PAGE_SIZE_BYTES_DEFAULT.toString))
   }
 
-  protected def getParquetPageRowLimit: String = {
-    val tableProps = IcebergWriteUtil.getTable(write).properties()
-    tableProps.getOrDefault(PARQUET_PAGE_ROW_LIMIT, PARQUET_PAGE_ROW_LIMIT_DEFAULT.toString)
-  }
-
   protected def getTargetFileSizeBytes: String = {
     normalizeCapacityString(IcebergWriteUtil.getWriteConf(write).targetDataFileSize().toString)
-  }
-
-  protected def getParquetRowGroupSizeBytes: String = {
-    val tableProps = IcebergWriteUtil.getTable(write).properties()
-    normalizeCapacityString(
-      tableProps.getOrDefault(
-        PARQUET_ROW_GROUP_SIZE_BYTES,
-        PARQUET_ROW_GROUP_SIZE_BYTES_DEFAULT.toString))
-  }
-
-  protected def getDictSizeBytes: String = {
-    val tableProps = IcebergWriteUtil.getTable(write).properties()
-    normalizeCapacityString(
-      tableProps.getOrDefault(PARQUET_DICT_SIZE_BYTES, PARQUET_DICT_SIZE_BYTES_DEFAULT.toString))
   }
 
   protected def getPartitionSpec: PartitionSpec = {
@@ -113,9 +80,6 @@ trait IcebergWriteExec extends ColumnarV2TableWriteExec {
   override def doValidateInternal(): ValidationResult = {
     if (!IcebergWriteUtil.supportsWrite(write)) {
       return ValidationResult.failed(s"Not support the write ${write.getClass.getSimpleName}")
-    }
-    if (IcebergWriteUtil.hasUnsupportedDataType(write)) {
-      return ValidationResult.failed("Contains UUID ot FIXED data type")
     }
     BackendsApiManager.getValidatorApiInstance.doSchemaValidate(query.schema) match {
       case Some(reason) => return ValidationResult.failed(reason)
@@ -145,13 +109,12 @@ trait IcebergWriteExec extends ColumnarV2TableWriteExec {
       return ValidationResult.failed("Not support this format " + format.name())
     }
 
-    val codec = getCodec
-    val unsupported = Set("brotli", "lzo", "lz4raw", "lz4_raw")
-    if (unsupported.contains(codec.toLowerCase(Locale.ROOT))) {
-      return ValidationResult.failed("Codec unsupported: " + codec)
-    }
-    if (query.output.exists(a => !AvroSchemaUtil.makeCompatibleName(a.name).equals(a.name))) {
-      return ValidationResult.failed("Not support the compatible column name")
+    IcebergWriteUtil.validateDataWrite(
+      IcebergWriteUtil.getWriteSchema(write),
+      getCodec,
+      query.output.map(_.name)) match {
+      case Some(reason) => return ValidationResult.failed(reason)
+      case None =>
     }
     if (
       IcebergWriteUtil

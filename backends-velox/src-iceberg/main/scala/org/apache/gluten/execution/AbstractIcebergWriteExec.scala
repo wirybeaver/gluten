@@ -17,32 +17,18 @@
 package org.apache.gluten.execution
 
 import org.apache.gluten.IcebergNestedFieldVisitor
-import org.apache.gluten.config.GlutenConfig.COLUMNAR_PARQUET_WRITE_BLOCK_SIZE
-import org.apache.gluten.config.VeloxConfig.{MAX_TARGET_FILE_SIZE_SESSION, PARQUET_DICT_SIZE_BYTES, PARQUET_PAGE_SIZE_BYTES}
 import org.apache.gluten.connector.write.{ColumnarBatchDataWriterFactory, ColumnarStreamingDataWriterFactory, IcebergDataWriteFactory}
 
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import org.apache.iceberg.spark.source.IcebergWriteUtil
 import org.apache.iceberg.types.TypeUtil
-
-import java.util
 
 import scala.collection.JavaConverters._
 
 abstract class AbstractIcebergWriteExec extends IcebergWriteExec {
 
   override protected def supportsSortedWrite: Boolean = true
-
-  private val parquetPageRowLimitSession =
-    "spark.gluten.sql.columnar.backend.velox.parquet_writer_page_row_limit"
-
-  private val parquetPageVersionSession =
-    "spark.gluten.sql.columnar.backend.velox.parquet_writer_datapage_version"
-
-  private val parquetCompressionLevelSession =
-    "spark.gluten.sql.columnar.backend.velox.parquet_writer_compression_level"
 
   // the writer factory works for both batch and streaming
   private def createIcebergDataWriteFactory(schema: StructType): IcebergDataWriteFactory = {
@@ -56,35 +42,12 @@ abstract class AbstractIcebergWriteExec extends IcebergWriteExec {
       schema.fields.filter(field => writeFieldNames.contains(field.name))
     )
 
-    val icebergProperties = new util.HashMap[String, String]
-
-    Seq(
-      PARQUET_PAGE_SIZE_BYTES.key -> getParquetPageSizeBytes,
-      COLUMNAR_PARQUET_WRITE_BLOCK_SIZE.key -> getParquetRowGroupSizeBytes,
-      MAX_TARGET_FILE_SIZE_SESSION.key -> getTargetFileSizeBytes,
-      PARQUET_DICT_SIZE_BYTES.key -> getDictSizeBytes
-    ).foreach {
-      case (key, value) =>
-        val overrideValue = SQLConf.get.getConfString(key, null)
-        if (overrideValue == null) {
-          icebergProperties.put(key, value)
-        } else {
-          icebergProperties.put(key, normalizeCapacityString(overrideValue))
-        }
-    }
-
-    Seq(
-      parquetPageRowLimitSession -> getParquetPageRowLimit,
-      parquetPageVersionSession -> getParquetPageVersion).foreach {
-      case (key, value) =>
-        icebergProperties.put(key, SQLConf.get.getConfString(key, value))
-    }
-
-    if (Seq("gzip", "zstd").exists(_.equalsIgnoreCase(getCodec))) {
-      Option(SQLConf.get.getConfString(parquetCompressionLevelSession, null))
-        .orElse(getParquetCompressionLevel)
-        .foreach(level => icebergProperties.put(parquetCompressionLevelSession, level))
-    }
+    val icebergProperties = IcebergWriteOptions.parquetProperties(
+      IcebergWriteUtil.getTable(write).properties(),
+      IcebergWriteUtil.getWriteProperty(write),
+      IcebergWriteUtil.getWriteConf(write).targetDataFileSize(),
+      getCodec
+    )
 
     IcebergDataWriteFactory(
       filteredSchema,
